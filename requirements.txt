@@ -1,4 +1,5 @@
 python-telegram-bot[asyncio,webhooks]==21.6
+aiohttp==3.11.11
 
 asyncpg==0.30.0
 sqlalchemy[asyncio]==2.0.36
