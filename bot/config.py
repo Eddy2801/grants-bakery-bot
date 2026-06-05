@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str
     WEBHOOK_HOST: str = ""
     WEBHOOK_PORT: int = 8443
+    KLIX_WEBHOOK_PORT: int = 8444
 
     # Bot DB
     BOT_DB_HOST: str = "bot-postgres"

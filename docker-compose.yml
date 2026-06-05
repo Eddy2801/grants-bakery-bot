@@ -9,6 +9,9 @@ services:
     depends_on:
       bot-postgres:
         condition: service_healthy
+    ports:
+      - "127.0.0.1:8443:8443"   # Telegram webhook (proxied by nginx)
+      - "127.0.0.1:8444:8444"   # Klix payment webhook (proxied by nginx)
     networks:
       - bot-internal
       - n8n_mqtt_net  # shared with ERP — postgres + redis
