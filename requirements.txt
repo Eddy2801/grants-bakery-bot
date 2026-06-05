@@ -1,5 +1,5 @@
 python-telegram-bot[asyncio,webhooks]==21.6
-anthropic==0.40.0
+
 asyncpg==0.30.0
 sqlalchemy[asyncio]==2.0.36
 alembic==1.13.3

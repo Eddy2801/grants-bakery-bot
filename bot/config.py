@@ -28,8 +28,9 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://bot-redis:6379/0"
 
-    # Anthropic
-    ANTHROPIC_API_KEY: str
+    # LLM via OpenRouter
+    OPENROUTER_API_KEY: str
+    LLM_MODEL: str = "google/gemini-flash-1.5"
 
     # Klix
     KLIX_BRAND_ID: str = ""

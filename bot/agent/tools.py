@@ -346,3 +346,18 @@ class ToolExecutor:
             f"Delivery: {order.delivery_date}\n"
             f"Total: €{order.total_cents/100:.2f}"
         )
+
+
+def to_openai_tools(tools: list[dict]) -> list[dict]:
+    """Convert Anthropic tool format to OpenAI function calling format."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t.get("description", ""),
+                "parameters": t.get("input_schema", {"type": "object", "properties": {}}),
+            },
+        }
+        for t in tools
+    ]

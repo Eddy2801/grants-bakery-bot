@@ -1,27 +1,27 @@
 """
-LLM agent — Claude Haiku with tool_use.
-Single-turn: receives conversation history + new message, returns reply text.
+LLM agent — OpenRouter (Google Gemini Flash) via OpenAI-compatible API.
 """
+import json
 import logging
-from typing import Any
 
-import anthropic
+import httpx
 
 from bot.config import config
 from bot.agent.prompts import get_system_prompt
-from bot.agent.tools import TOOLS, ToolExecutor
+from bot.agent.tools import TOOLS, ToolExecutor, to_openai_tools
 from bot.redis_client import get_conversation, append_message
 
 logger = logging.getLogger(__name__)
 
-_client: anthropic.AsyncAnthropic | None = None
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+_OPENAI_TOOLS = None
 
 
-def get_client() -> anthropic.AsyncAnthropic:
-    global _client
-    if _client is None:
-        _client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
-    return _client
+def _get_tools():
+    global _OPENAI_TOOLS
+    if _OPENAI_TOOLS is None:
+        _OPENAI_TOOLS = to_openai_tools(TOOLS)
+    return _OPENAI_TOOLS
 
 
 async def run_agent(
@@ -36,72 +36,67 @@ async def run_agent(
 
     Returns:
         (response_text, pending_actions)
-        pending_actions: {
-            "pending_order": {...} | None,
-            "pending_subscription": {...} | None,
-        }
     """
-    client = get_client()
     system = get_system_prompt(intent, lang)
-
-    # Build message history (last 8 messages for context)
     history = await get_conversation(telegram_id)
-
-    # Add current user message to history for the API call
-    messages = history + [{"role": "user", "content": user_message}]
+    messages = [{"role": "system", "content": system}] + history + [{"role": "user", "content": user_message}]
 
     executor = ToolExecutor(telegram_id=telegram_id, user_id=user_id, lang=lang)
+    headers = {
+        "Authorization": f"Bearer {config.OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://grantsbakery.lv",
+        "X-Title": "Grants Bakery Bot",
+    }
 
-    # Agentic loop — max 5 tool-call rounds
-    for _round in range(5):
-        response = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1024,
-            system=system,
-            tools=TOOLS,
-            messages=messages,
-        )
-
-        logger.debug("LLM response stop_reason=%s", response.stop_reason)
-
-        if response.stop_reason == "end_turn":
-            # Final text response
-            text = _extract_text(response)
-            # Save conversation
-            await append_message(telegram_id, "user", user_message)
-            await append_message(telegram_id, "assistant", text)
-            return text, {
-                "pending_order": executor._pending_order or None,
-                "pending_subscription": executor._pending_subscription or None,
+    message = None
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for _round in range(5):
+            payload = {
+                "model": config.LLM_MODEL,
+                "messages": messages,
+                "tools": _get_tools(),
+                "tool_choice": "auto",
+                "max_tokens": 1024,
             }
 
-        if response.stop_reason == "tool_use":
-            # Execute all tool calls
-            tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    result = await executor.execute(block.name, block.input)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": result,
-                    })
+            resp = await client.post(OPENROUTER_URL, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
 
-            # Append assistant + tool results to messages
-            messages.append({"role": "assistant", "content": response.content})
-            messages.append({"role": "user", "content": tool_results})
-        else:
-            break
+            choice = data["choices"][0]
+            message = choice["message"]
+            finish_reason = choice.get("finish_reason", "stop")
 
-    # Fallback
-    text = _extract_text(response) or "Извините, что-то пошло не так. Попробуйте ещё раз."
+            logger.debug("LLM finish_reason=%s", finish_reason)
+
+            tool_calls = message.get("tool_calls") or []
+
+            if finish_reason in ("stop", "end_turn") or not tool_calls:
+                text = message.get("content") or ""
+                await append_message(telegram_id, "user", user_message)
+                await append_message(telegram_id, "assistant", text)
+                return text, {
+                    "pending_order": executor._pending_order or None,
+                    "pending_subscription": executor._pending_subscription or None,
+                }
+
+            # Execute tool calls
+            messages.append(message)
+            for tc in tool_calls:
+                fn = tc["function"]
+                try:
+                    tool_input = json.loads(fn["arguments"])
+                except (json.JSONDecodeError, TypeError):
+                    tool_input = {}
+                result = await executor.execute(fn["name"], tool_input)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": result,
+                })
+
+    text = (message.get("content") if message else None) or "Извините, что-то пошло не так. Попробуйте ещё раз."
     await append_message(telegram_id, "user", user_message)
     await append_message(telegram_id, "assistant", text)
     return text, {}
-
-
-def _extract_text(response: Any) -> str:
-    for block in response.content:
-        if hasattr(block, "type") and block.type == "text":
-            return block.text
-    return ""
