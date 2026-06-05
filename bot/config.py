@@ -60,8 +60,9 @@ class Settings(BaseSettings):
 
     @property
     def bot_db_url(self) -> str:
+        from urllib.parse import quote_plus
         return (
-            f"postgresql+asyncpg://{self.BOT_DB_USER}:{self.BOT_DB_PASS}"
+            f"postgresql+asyncpg://{self.BOT_DB_USER}:{quote_plus(self.BOT_DB_PASS)}"
             f"@{self.BOT_DB_HOST}:{self.BOT_DB_PORT}/{self.BOT_DB_NAME}"
         )
 
