@@ -38,6 +38,15 @@ async def run_agent(
         (response_text, pending_actions)
     """
     system = get_system_prompt(intent, lang)
+
+    # Inject RAG context for question-type intents
+    if intent in ("PRODUCT_QUESTION", "HELP", "OTHER"):
+        from bot.knowledge import search_knowledge, format_context
+        chunks = await search_knowledge(user_message)
+        if chunks:
+            rag_block = f"\n\n## Relevant knowledge\n{format_context(chunks)}"
+            system = system + rag_block
+
     history = await get_conversation(telegram_id)
     messages = [{"role": "system", "content": system}] + history + [{"role": "user", "content": user_message}]
 
