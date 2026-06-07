@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # OpenAI (embeddings only — not via OpenRouter)
     OPENAI_API_KEY: str = ""
 
+    # fal.ai (image generation)
+    FAL_KEY: str = ""
+
     # Klix
     KLIX_BRAND_ID: str = ""
     KLIX_SECRET_KEY: str = ""
