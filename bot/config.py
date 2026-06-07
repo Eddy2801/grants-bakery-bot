@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     OPENROUTER_API_KEY: str
     LLM_MODEL: str = "google/gemini-flash-1.5"
 
+    # OpenAI (embeddings only — not via OpenRouter)
+    OPENAI_API_KEY: str = ""
+
     # Klix
     KLIX_BRAND_ID: str = ""
     KLIX_SECRET_KEY: str = ""

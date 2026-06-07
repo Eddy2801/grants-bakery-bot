@@ -1,33 +1,26 @@
 """
 Knowledge base search via pgvector (ERP postgres).
-Uses fastembed (ONNX) — same model as embed_index.py, no torch needed on server.
+Uses OpenAI text-embedding-3-small (1536 dims) for cross-lingual retrieval.
+EN source content is retrieved correctly for LV/RU/EN queries without translation.
 """
 import asyncio
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-TOP_K = 3
-MIN_SCORE = 0.35  # cosine similarity threshold
+TOP_K = 4
+MIN_SCORE = 0.30  # cosine similarity threshold (lower: cross-lingual gap)
 
-_embedder = None
-
-
-def _get_embedder():
-    global _embedder
-    if _embedder is None:
-        from fastembed import TextEmbedding
-        _embedder = TextEmbedding(model_name=MODEL_NAME)
-        logger.info("Knowledge embedder loaded: %s", MODEL_NAME)
-    return _embedder
+EMBED_MODEL = "text-embedding-3-small"
+EMBED_DIMS = 1536
 
 
 def _embed_sync(text: str) -> list[float]:
-    embedder = _get_embedder()
-    vectors = list(embedder.embed([text]))
-    return vectors[0].tolist()
+    import openai
+    from bot.config import config
+    client = openai.OpenAI(api_key=config.OPENAI_API_KEY)
+    resp = client.embeddings.create(model=EMBED_MODEL, input=text, dimensions=EMBED_DIMS)
+    return resp.data[0].embedding
 
 
 def _search_sync(query: str) -> list[dict]:
@@ -38,11 +31,11 @@ def _search_sync(query: str) -> list[dict]:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT source, content,
-                   1 - (embedding <=> %s::vector) AS score
-            FROM knowledge_chunks
-            WHERE embedding IS NOT NULL
-            ORDER BY embedding <=> %s::vector
+            SELECT c.id, c.source, c.book, c.section, c.content, c.has_images,
+                   1 - (c.embedding <=> %s::vector) AS score
+            FROM knowledge_chunks c
+            WHERE c.embedding IS NOT NULL
+            ORDER BY c.embedding <=> %s::vector
             LIMIT %s
             """,
             (vec, vec, TOP_K),
@@ -50,11 +43,22 @@ def _search_sync(query: str) -> list[dict]:
         rows = cur.fetchall()
     finally:
         conn.close()
-    return [
-        {"source": r[0], "content": r[1], "score": float(r[2])}
-        for r in rows
-        if float(r[2]) >= MIN_SCORE
-    ]
+
+    results = []
+    for r in rows:
+        score = float(r[6])
+        if score < MIN_SCORE:
+            continue
+        results.append({
+            "id": r[0],
+            "source": r[1],
+            "book": r[2],
+            "section": r[3],
+            "content": r[4],
+            "has_images": r[5],
+            "score": score,
+        })
+    return results
 
 
 async def search_knowledge(query: str) -> list[dict]:
@@ -67,10 +71,18 @@ async def search_knowledge(query: str) -> list[dict]:
 
 
 def format_context(chunks: list[dict]) -> str:
-    """Format chunks for injection into LLM prompt."""
+    """Format chunks for injection into LLM system prompt."""
     if not chunks:
         return ""
     parts = []
     for c in chunks:
-        parts.append(f"[{c['source']}]\n{c['content']}")
-    return "\n\n---\n\n".join(parts)
+        header = c["source"]
+        if c.get("section"):
+            header += f" / {c['section']}"
+        parts.append(f"[{header}]
+{c['content']}")
+    return "
+
+---
+
+".join(parts)
