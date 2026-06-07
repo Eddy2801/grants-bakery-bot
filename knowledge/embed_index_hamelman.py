@@ -63,8 +63,7 @@ def get_db_conn():
     )
 
 
-def load_chunks() -> list[dict]:
-    path = Path("C:/Users/edgar/Embeddings/hamelman_chunks.json")
+def load_chunks(path: Path = CHUNKS_JSON) -> list[dict]:
     logger.info("Loading %s", path)
     with open(path, encoding="utf-8-sig") as f:
         return json.load(f)
@@ -130,6 +129,8 @@ def main():
     parser.add_argument("--clear",       action="store_true", help="Delete existing hamelman chunks before indexing")
     parser.add_argument("--dry-run",     action="store_true", help="Embed but do not insert into DB")
     parser.add_argument("--images-only", action="store_true", help="Only upload images, skip text indexing")
+    parser.add_argument("--chunks",      default=str(CHUNKS_JSON), help="Path to hamelman_chunks.json")
+    parser.add_argument("--images",      default=str(IMAGES_DIR),  help="Path to images directory")
     args = parser.parse_args()
 
     import openai
@@ -144,7 +145,7 @@ def main():
     cur = conn.cursor()
 
     # ── Images ──────────────────────────────────────────────────────────────────
-    images_dir = Path("C:/Users/edgar/Embeddings/images")
+    images_dir = Path(args.images)
     if images_dir.exists():
         index_images(cur, images_dir)
         conn.commit()
@@ -157,7 +158,7 @@ def main():
         return
 
     # ── Text chunks ─────────────────────────────────────────────────────────────
-    raw_chunks = load_chunks()
+    raw_chunks = load_chunks(Path(args.chunks))
     chunks = filter_chunks(raw_chunks)
 
     if args.clear:
