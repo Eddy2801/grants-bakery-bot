@@ -109,10 +109,53 @@ def classify_image(client, image_bytes: bytes) -> tuple[str, str]:
     return image_type, description
 
 
-def generate_illustration(fal_client, description: str, model: str) -> bytes:
+def get_chunk_context(cur, image_id: int) -> str:
+    """Fetch linked chunk texts for an image. Returns combined context string."""
+    cur.execute(
+        """SELECT c.section, c.content
+           FROM knowledge_chunks c
+           JOIN knowledge_chunk_images ci ON ci.chunk_id = c.id
+           WHERE ci.image_id = %s
+           ORDER BY c.chunk_index""",
+        (image_id,),
+    )
+    rows = cur.fetchall()
+    if not rows:
+        return ""
+    parts = []
+    for section, content in rows:
+        header = f"[{section}] " if section else ""
+        parts.append(header + content[:500])
+    return "\n\n".join(parts)
+
+
+def build_illustration_concept(oai_client, chunk_context: str, image_description: str) -> str:
+    """Use GPT-4o to synthesize a specific illustration concept from chunk text."""
+    system = (
+        "You are a technical illustration director for an artisan bakery brand. "
+        "Given a passage from a bread baking book and a rough description of a related image, "
+        "write a precise, concrete illustration brief (2-3 sentences) describing EXACTLY what "
+        "should be shown in a technical illustration. Focus on the specific technique, objects, "
+        "and action. No artistic style. No people's faces. No text in illustration."
+    )
+    user = (
+        f"Book passage:\n{chunk_context[:800]}\n\n"
+        f"Related image description: {image_description}\n\n"
+        "Write the illustration brief:"
+    )
+    resp = oai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        max_tokens=120,
+        temperature=0.3,
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def generate_illustration(fal_client, concept: str, model: str) -> bytes:
     """Call fal.ai Flux. Returns raw PNG/JPEG bytes."""
     model_id = f"fal-ai/flux/{model}"
-    prompt = f"{BRAND_STYLE} Subject: {description}"
+    prompt = f"{BRAND_STYLE} {concept}"
 
     result = fal_client.subscribe(
         model_id,
@@ -135,9 +178,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--classify-only",  action="store_true", help="Only run Vision classification, no generation")
     parser.add_argument("--generate-only",  action="store_true", help="Skip Vision, only generate for already-classified images")
-    parser.add_argument("--model",          default="dev", choices=["schnell", "dev"], help="Flux model (default: dev)")
+    parser.add_argument("--model",          default="schnell", choices=["schnell", "dev"], help="Flux model (default: schnell)")
     parser.add_argument("--limit",          type=int, default=0, help="Process at most N images (for testing)")
     parser.add_argument("--reclassify",     action="store_true", help="Re-classify images that already have a type")
+    parser.add_argument("--regen-ids",      type=str, default="", help="Comma-separated image IDs to forcibly regenerate")
     args = parser.parse_args()
 
     from dotenv import load_dotenv
@@ -161,7 +205,14 @@ def main():
     cur = conn.cursor()
 
     # ── Load images to process ─────────────────────────────────────────────────
-    if args.generate_only:
+    regen_ids = [int(x) for x in args.regen_ids.split(",") if x.strip()]
+
+    if regen_ids:
+        cur.execute(
+            "SELECT id, filename, data, image_type, description FROM knowledge_images WHERE id = ANY(%s) ORDER BY id",
+            (regen_ids,),
+        )
+    elif args.generate_only:
         cur.execute(
             """SELECT id, filename, data, image_type, description
                FROM knowledge_images
@@ -234,7 +285,16 @@ def main():
             continue
 
         try:
-            img_bytes = generate_illustration(fal_client, description, args.model)
+            # Build concept from chunk context (if linked chunks exist)
+            chunk_context = get_chunk_context(cur, img_id)
+            if chunk_context and oai:
+                concept = build_illustration_concept(oai, chunk_context, description)
+                logger.info("  Concept: %s", concept[:120])
+            else:
+                concept = description
+                logger.info("  No chunk context, using description")
+
+            img_bytes = generate_illustration(fal_client, concept, args.model)
             cur.execute(
                 "UPDATE knowledge_images SET generated_data=%s WHERE id=%s",
                 (psycopg2.Binary(img_bytes), img_id),
